@@ -200,5 +200,103 @@ app.post("/merge-reel", async (req, res) => {
   }
 });
 
+
+
+// ── MERGE + UPLOAD: same as merge-reel but uploads result to WaveSpeed CDN ──
+app.post("/merge-and-upload", async (req, res) => {
+  const { generated_video_url, original_video_url, hook, hook_position, hook_style, ws_api_key } = req.body;
+  if (!generated_video_url) return res.status(400).json({ error: "generated_video_url required" });
+
+  const id = crypto.randomBytes(8).toString("hex");
+  const genPath = path.join(TMP, `${id}_gen.mp4`);
+  const origPath = path.join(TMP, `${id}_orig.mp4`);
+  const audioPath = path.join(TMP, `${id}_audio.aac`);
+  const outPath = path.join(TMP, `${id}_final.mp4`);
+
+  try {
+    await download(generated_video_url, genPath);
+
+    let hasAudio = false;
+    if (original_video_url) {
+      try {
+        await download(original_video_url, origPath);
+        await ffmpeg(["-i", origPath, "-vn", "-acodec", "aac", "-b:a", "128k", "-y", audioPath]);
+        if (fs.existsSync(audioPath) && fs.statSync(audioPath).size > 100) hasAudio = true;
+      } catch { /* no audio */ }
+    }
+
+    const filters = [];
+    if (hook && hook.trim()) {
+      const fontSize = hook_style?.fontSize || 28;
+      const fontColor = (hook_style?.color || "#FFFFFF").replace("#", "");
+      const pos = (hook_position || "top").toLowerCase();
+      let yExpr = "h*0.08";
+      if (pos === "center" || pos === "middle") yExpr = "(h-th)/2";
+      else if (pos === "bottom") yExpr = "h*0.85-th";
+      const escapedText = hook.replace(/\\/g, "\\\\\\\\").replace(/'/g, "'\\\\\\''").replace(/:/g, "\\\\:").replace(/%/g, "\\\\%");
+      let drawtext = "drawtext=text='" + escapedText + "'" +
+        ":fontsize=" + fontSize +
+        ":fontcolor=0x" + fontColor +
+        ":x=(w-tw)/2" +
+        ":y=" + yExpr +
+        ":shadowcolor=black:shadowx=2:shadowy=2" +
+        ":borderw=2:bordercolor=black";
+      const fontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
+      if (fs.existsSync(fontPath)) drawtext += ":fontfile=" + fontPath;
+      filters.push(drawtext);
+    }
+
+    const args = ["-i", genPath];
+    if (hasAudio) args.push("-i", audioPath);
+    if (filters.length > 0) args.push("-vf", filters.join(","));
+    if (hasAudio) { args.push("-map", "0:v:0", "-map", "1:a:0", "-shortest"); }
+    else { args.push("-an"); }
+    args.push("-c:v", "libx264", "-preset", "fast", "-crf", "23", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-y", outPath);
+
+    await ffmpeg(args, 300000);
+    if (!fs.existsSync(outPath)) throw new Error("Merge failed");
+
+    // Upload to WaveSpeed CDN if key provided
+    if (ws_api_key) {
+      const FormData = (await import("form-data")).default;
+      const form = new FormData();
+      form.append("file", fs.createReadStream(outPath), { filename: "reel.mp4", contentType: "video/mp4" });
+      
+      const uploadRes = await new Promise((resolve, reject) => {
+        const options = {
+          hostname: "api.wavespeed.ai",
+          path: "/api/v3/media/upload/binary",
+          method: "POST",
+          headers: { ...form.getHeaders(), Authorization: "Bearer " + ws_api_key },
+        };
+        const req = https.request(options, (r) => {
+          let body = "";
+          r.on("data", (c) => body += c);
+          r.on("end", () => {
+            try { resolve(JSON.parse(body)); } catch { resolve({ error: body }); }
+          });
+        });
+        req.on("error", reject);
+        form.pipe(req);
+      });
+
+      const cdnUrl = uploadRes?.data?.url || uploadRes?.url;
+      if (cdnUrl) {
+        res.json({ success: true, resultUrl: cdnUrl, size_bytes: fs.statSync(outPath).size });
+      } else {
+        res.json({ success: true, resultUrl: null, error: "Upload failed: " + JSON.stringify(uploadRes).slice(0, 200), size_bytes: fs.statSync(outPath).size });
+      }
+    } else {
+      // Fallback to base64
+      const data = fs.readFileSync(outPath);
+      res.json({ success: true, video_base64: data.toString("base64"), size_bytes: data.length });
+    }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  } finally {
+    [genPath, origPath, audioPath, outPath].forEach((f) => { try { fs.unlinkSync(f); } catch {} });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`ffmpeg-reel-server listening on :${PORT}`));
