@@ -316,30 +316,30 @@ app.post("/burn-text", upload.single("video"), async (req, res) => {
   try {
     // Get video dimensions to calculate proper text sizing
     const probeArgs = ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", inputPath];
-    const dims = await new Promise((resolve, reject) => {
-      execFile("ffprobe", probeArgs, { timeout: 10000 }, (err, stdout) => {
-        if (err) return reject(err);
-        const [w, h] = stdout.trim().split(",").map(Number);
-        resolve({ w: w || 1080, h: h || 1920 });
+    let vidWidth = 1080, vidHeight = 1920;
+    try {
+      const dims = await new Promise((resolve, reject) => {
+        execFile("ffprobe", probeArgs, { timeout: 10000 }, (err, stdout) => {
+          if (err) return reject(err);
+          const [w, h] = stdout.trim().split(",").map(Number);
+          resolve({ w: w || 1080, h: h || 1920 });
+        });
       });
-    });
-    const vidWidth = dims.w;
-    const vidHeight = dims.h;
+      vidWidth = dims.w;
+      vidHeight = dims.h;
+    } catch { /* fallback to 1080x1920 */ }
 
     // Auto-calculate font size based on video width (Instagram style: ~4% of width)
     const baseFontSize = Math.round(vidWidth * 0.042);
-    // Max text width: 85% of video width — force line wrapping beyond this
-    const maxTextWidth = Math.round(vidWidth * 0.85);
 
     // Escape text for ffmpeg drawtext filter
+    // FFmpeg drawtext requires: \ : ' to be escaped
     const escaped = text
-      .replace(/\\/g, "\\\\\\\\")
-      .replace(/'/g, "'\\\\\\''")
-      .replace(/:/g, "\\\\:")
-      .replace(/%/g, "\\\\%")
-      .replace(/\[/g, "\\\\[")
-      .replace(/\]/g, "\\\\]")
-      .replace(/"/g, '\\\\"');
+      .replace(/\\/g, "\\\\")
+      .replace(/'/g, "\u2019")
+      .replace(/:/g, "\\:")
+      .replace(/%/g, "%%")
+      .replace(/"/g, "\u201C");
 
     // Instagram-native style:
     // - Bold white text, centered
@@ -350,16 +350,16 @@ app.post("/burn-text", upload.single("video"), async (req, res) => {
     const fontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
 
     const drawtext =
-      `drawtext=text='${escaped}'` +
-      `:fontfile=${fontPath}` +
-      `:fontsize=${baseFontSize}` +
-      `:fontcolor=white` +
-      `:x=(w-tw)/2` +
-      `:y=${yPos}` +
-      `:borderw=3` +
-      `:bordercolor=black@0.7` +
-      `:shadowcolor=black@0.4:shadowx=2:shadowy=2` +
-      `:line_spacing=8`;
+      "drawtext=text='" + escaped + "'" +
+      ":fontfile=" + fontPath +
+      ":fontsize=" + baseFontSize +
+      ":fontcolor=white" +
+      ":x=(w-tw)/2" +
+      ":y=" + yPos +
+      ":borderw=3" +
+      ":bordercolor=black@0.7" +
+      ":shadowcolor=black@0.4:shadowx=2:shadowy=2" +
+      ":line_spacing=8";
 
     const args = [
       "-i", inputPath,
@@ -396,6 +396,7 @@ app.post("/burn-text", upload.single("video"), async (req, res) => {
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`ffmpeg-reel-server listening on :${PORT}`));
+
 
 
 
