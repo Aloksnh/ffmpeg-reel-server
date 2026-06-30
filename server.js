@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const multer = require("multer");
 const { execFile } = require("child_process");
 const fs = require("fs");
 const path = require("path");
@@ -13,6 +14,9 @@ app.use(express.json({ limit: "5mb" }));
 
 const TMP = "/tmp/reel-work";
 if (!fs.existsSync(TMP)) fs.mkdirSync(TMP, { recursive: true });
+
+// Multer for file uploads (store in TMP)
+const upload = multer({ dest: TMP, limits: { fileSize: 100 * 1024 * 1024 } });
 
 // Health check
 app.get("/", (_req, res) => res.json({ status: "ok", service: "ffmpeg-reel-server" }));
@@ -298,5 +302,81 @@ app.post("/merge-and-upload", async (req, res) => {
   }
 });
 
+// ── BURN TEXT: upload a video file + text → returns video with text burned on top ──
+app.post("/burn-text", upload.single("video"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "video file required" });
+  const text = req.body.text;
+  if (!text || !text.trim()) return res.status(400).json({ error: "text required" });
+
+  const id = crypto.randomBytes(8).toString("hex");
+  const inputPath = req.file.path;
+  const outPath = path.join(TMP, `${id}_burned.mp4`);
+
+  try {
+    const fontSize = parseInt(req.body.fontSize) || 38;
+    const fontColor = (req.body.fontColor || "white").replace("#", "");
+    const position = (req.body.position || "top").toLowerCase();
+    const marginTop = parseInt(req.body.marginTop) || 60;
+
+    let yExpr = `${marginTop}`;
+    if (position === "center" || position === "middle") yExpr = "(h-th)/2";
+    else if (position === "bottom") yExpr = "h-th-60";
+
+    // Escape text for ffmpeg drawtext filter
+    const escaped = text
+      .replace(/\\/g, "\\\\\\\\")
+      .replace(/'/g, "'\\\\\\''")
+      .replace(/:/g, "\\\\:")
+      .replace(/%/g, "\\\\%")
+      .replace(/\[/g, "\\\\[")
+      .replace(/\]/g, "\\\\]");
+
+    // Build drawtext filter with background box for readability
+    const bgColor = req.body.bgColor || "black@0.6";
+    const drawtext =
+      `drawtext=text='${escaped}'` +
+      `:fontsize=${fontSize}` +
+      `:fontcolor=${fontColor}` +
+      `:x=(w-tw)/2` +
+      `:y=${yExpr}` +
+      `:box=1:boxcolor=${bgColor}:boxborderw=12` +
+      `:shadowcolor=black:shadowx=1:shadowy=1` +
+      `:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf`;
+
+    const args = [
+      "-i", inputPath,
+      "-vf", drawtext,
+      "-c:v", "libx264",
+      "-preset", "fast",
+      "-crf", "23",
+      "-c:a", "copy",
+      "-movflags", "+faststart",
+      "-y",
+      outPath,
+    ];
+
+    await ffmpeg(args, 300000);
+    if (!fs.existsSync(outPath)) throw new Error("Burn text failed — no output");
+
+    // Stream file back as download
+    const stat = fs.statSync(outPath);
+    res.setHeader("Content-Type", "video/mp4");
+    res.setHeader("Content-Length", stat.size);
+    res.setHeader("Content-Disposition", `attachment; filename="hook_reel_${id}.mp4"`);
+    const stream = fs.createReadStream(outPath);
+    stream.pipe(res);
+    stream.on("end", () => {
+      try { fs.unlinkSync(outPath); } catch {}
+      try { fs.unlinkSync(inputPath); } catch {}
+    });
+  } catch (e) {
+    try { fs.unlinkSync(outPath); } catch {}
+    try { fs.unlinkSync(inputPath); } catch {}
+    res.status(500).json({ error: e.message });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`ffmpeg-reel-server listening on :${PORT}`));
+
+
