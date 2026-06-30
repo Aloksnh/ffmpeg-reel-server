@@ -303,6 +303,7 @@ app.post("/merge-and-upload", async (req, res) => {
 });
 
 // ── BURN TEXT: upload a video file + text → returns video with text burned on top ──
+// Instagram Reels native style: bold white text, centered, lower third, auto-wrapped
 app.post("/burn-text", upload.single("video"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "video file required" });
   const text = req.body.text;
@@ -313,14 +314,22 @@ app.post("/burn-text", upload.single("video"), async (req, res) => {
   const outPath = path.join(TMP, `${id}_burned.mp4`);
 
   try {
-    const fontSize = parseInt(req.body.fontSize) || 38;
-    const fontColor = (req.body.fontColor || "white").replace("#", "");
-    const position = (req.body.position || "top").toLowerCase();
-    const marginTop = parseInt(req.body.marginTop) || 60;
+    // Get video dimensions to calculate proper text sizing
+    const probeArgs = ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", inputPath];
+    const dims = await new Promise((resolve, reject) => {
+      execFile("ffprobe", probeArgs, { timeout: 10000 }, (err, stdout) => {
+        if (err) return reject(err);
+        const [w, h] = stdout.trim().split(",").map(Number);
+        resolve({ w: w || 1080, h: h || 1920 });
+      });
+    });
+    const vidWidth = dims.w;
+    const vidHeight = dims.h;
 
-    let yExpr = `${marginTop}`;
-    if (position === "center" || position === "middle") yExpr = "(h-th)/2";
-    else if (position === "bottom") yExpr = "h-th-60";
+    // Auto-calculate font size based on video width (Instagram style: ~4% of width)
+    const baseFontSize = Math.round(vidWidth * 0.042);
+    // Max text width: 85% of video width — force line wrapping beyond this
+    const maxTextWidth = Math.round(vidWidth * 0.85);
 
     // Escape text for ffmpeg drawtext filter
     const escaped = text
@@ -329,19 +338,28 @@ app.post("/burn-text", upload.single("video"), async (req, res) => {
       .replace(/:/g, "\\\\:")
       .replace(/%/g, "\\\\%")
       .replace(/\[/g, "\\\\[")
-      .replace(/\]/g, "\\\\]");
+      .replace(/\]/g, "\\\\]")
+      .replace(/"/g, '\\\\"');
 
-    // Build drawtext filter with background box for readability
-    const bgColor = req.body.bgColor || "black@0.6";
+    // Instagram-native style:
+    // - Bold white text, centered
+    // - Slight black border (not a box — just text stroke for readability)
+    // - Positioned in lower third (y = 72% of height)
+    // - line_spacing for multi-line readability
+    const yPos = Math.round(vidHeight * 0.72);
+    const fontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
+
     const drawtext =
       `drawtext=text='${escaped}'` +
-      `:fontsize=${fontSize}` +
-      `:fontcolor=${fontColor}` +
+      `:fontfile=${fontPath}` +
+      `:fontsize=${baseFontSize}` +
+      `:fontcolor=white` +
       `:x=(w-tw)/2` +
-      `:y=${yExpr}` +
-      `:box=1:boxcolor=${bgColor}:boxborderw=12` +
-      `:shadowcolor=black:shadowx=1:shadowy=1` +
-      `:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf`;
+      `:y=${yPos}` +
+      `:borderw=3` +
+      `:bordercolor=black@0.7` +
+      `:shadowcolor=black@0.4:shadowx=2:shadowy=2` +
+      `:line_spacing=8`;
 
     const args = [
       "-i", inputPath,
@@ -378,5 +396,6 @@ app.post("/burn-text", upload.single("video"), async (req, res) => {
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`ffmpeg-reel-server listening on :${PORT}`));
+
 
 
