@@ -334,7 +334,23 @@ app.post("/burn-text", upload.single("video"), async (req, res) => {
 
     // Escape text for ffmpeg drawtext filter
     // FFmpeg drawtext requires: \ : ' to be escaped
-    const escaped = text
+    // Also manually wrap text to fit within 85% of video width
+    const maxCharsPerLine = Math.floor((vidWidth * 0.85) / (baseFontSize * 0.52)); // ~0.52 char width ratio for bold
+    const words = text.split(" ");
+    const lines = [];
+    let currentLine = "";
+    for (const word of words) {
+      if (currentLine.length + word.length + 1 > maxCharsPerLine && currentLine.length > 0) {
+        lines.push(currentLine);
+        currentLine = word;
+      } else {
+        currentLine = currentLine ? currentLine + " " + word : word;
+      }
+    }
+    if (currentLine) lines.push(currentLine);
+    const wrappedText = lines.join("\n");
+
+    const escaped = wrappedText
       .replace(/\\/g, "\\\\")
       .replace(/'/g, "\u2019")
       .replace(/:/g, "\\:")
@@ -344,9 +360,11 @@ app.post("/burn-text", upload.single("video"), async (req, res) => {
     // Instagram-native style:
     // - Bold white text, centered
     // - Slight black border (not a box — just text stroke for readability)
-    // - Positioned in lower third (y = 72% of height)
+    // - Positioned in lower third, adjusted up based on number of lines
     // - line_spacing for multi-line readability
-    const yPos = Math.round(vidHeight * 0.72);
+    const lineHeight = Math.round(baseFontSize * 1.4);
+    const totalTextHeight = lines.length * lineHeight;
+    const yPos = Math.round(vidHeight * 0.75) - totalTextHeight;
     const fontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
 
     const drawtext =
@@ -359,7 +377,8 @@ app.post("/burn-text", upload.single("video"), async (req, res) => {
       ":borderw=3" +
       ":bordercolor=black@0.7" +
       ":shadowcolor=black@0.4:shadowx=2:shadowy=2" +
-      ":line_spacing=8";
+      ":line_spacing=8" +
+      ":text_align=center";
 
     const args = [
       "-i", inputPath,
@@ -396,6 +415,7 @@ app.post("/burn-text", upload.single("video"), async (req, res) => {
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`ffmpeg-reel-server listening on :${PORT}`));
+
 
 
 
