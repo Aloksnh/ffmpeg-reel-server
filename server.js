@@ -348,41 +348,38 @@ app.post("/burn-text", upload.single("video"), async (req, res) => {
       }
     }
     if (currentLine) lines.push(currentLine);
-    const wrappedText = lines.join("\n");
-
-    const escaped = wrappedText
-      .replace(/\\/g, "\\\\")
-      .replace(/'/g, "\u2019")
-      .replace(/:/g, "\\:")
-      .replace(/%/g, "%%")
-      .replace(/"/g, "\u201C");
 
     // Instagram-native style:
-    // - Bold white text, centered
-    // - Slight black border (not a box — just text stroke for readability)
+    // - Bold white text, centered per-line
+    // - Slight black border (text stroke for readability)
     // - Positioned in lower third, adjusted up based on number of lines
-    // - line_spacing for multi-line readability
     const lineHeight = Math.round(baseFontSize * 1.4);
     const totalTextHeight = lines.length * lineHeight;
     const yPos = Math.round(vidHeight * 0.75) - totalTextHeight;
     const fontPath = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
 
-    const drawtext =
-      "drawtext=text='" + escaped + "'" +
-      ":fontfile=" + fontPath +
-      ":fontsize=" + baseFontSize +
-      ":fontcolor=white" +
-      ":x=(w-tw)/2" +
-      ":y=" + yPos +
-      ":borderw=3" +
-      ":bordercolor=black@0.7" +
-      ":shadowcolor=black@0.4:shadowx=2:shadowy=2" +
-      ":line_spacing=8" +
-      ":text_align=center";
+    // Use multiple drawtext filters for each line (ensures each line is independently centered)
+    const drawtextFilters = lines.map((line, idx) => {
+      const lineEscaped = line
+        .replace(/\\/g, "\\\\")
+        .replace(/'/g, "\u2019")
+        .replace(/:/g, "\\:")
+        .replace(/"/g, "\u201C");
+      const lineY = yPos + (idx * lineHeight);
+      return "drawtext=text='" + lineEscaped + "'" +
+        ":fontfile=" + fontPath +
+        ":fontsize=" + baseFontSize +
+        ":fontcolor=white" +
+        ":x=(w-tw)/2" +
+        ":y=" + lineY +
+        ":borderw=3" +
+        ":bordercolor=black@0.7" +
+        ":shadowcolor=black@0.4:shadowx=2:shadowy=2";
+    });
 
     const args = [
       "-i", inputPath,
-      "-vf", drawtext,
+      "-vf", drawtextFilters.join(","),
       "-c:v", "libx264",
       "-preset", "fast",
       "-crf", "23",
@@ -415,6 +412,9 @@ app.post("/burn-text", upload.single("video"), async (req, res) => {
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`ffmpeg-reel-server listening on :${PORT}`));
+
+
+
 
 
 
